@@ -3,7 +3,7 @@ import { NoSubscriberBehavior, StreamType, VoiceConnection, createAudioPlayer, c
 import { SupabaseClient, createClient } from "@supabase/supabase-js";
 import { Action, BgentRuntime, Content, Message, State, SupabaseDatabaseAdapter, composeContext, defaultActions, embeddingZeroVector, messageHandlerTemplate, parseJSONObjectFromText } from "bgent";
 import { UUID } from 'crypto';
-import { BaseGuildVoiceChannel, ChannelType, Client, Message as DiscordMessage, Events, GatewayIntentBits, Guild, GuildMember, Partials, Routes, VoiceState } from "discord.js";
+import { BaseGuildVoiceChannel, ChannelType, Client, Message as DiscordMessage, Events, GatewayIntentBits, Guild, GuildMember, Partials, Routes, TextChannel, VoiceState } from "discord.js";
 import { EventEmitter } from "events";
 import prism from "prism-media";
 import { Readable, pipeline } from "stream";
@@ -238,6 +238,9 @@ export class DiscordClient extends EventEmitter {
             const userName = message.author.username;
             const channelId = message.channel.id;
             const textContent = message.content;
+            const channel = message.channel as TextChannel;
+            const channelTopic = channel.topic || "";
+            const channelName = channel.name;
 
             if (settings.DISCORD_IGNORED_CHANNEL_IDS.includes(channelId)) {
                 console.log("Ignoring message in ignored channel");
@@ -253,7 +256,7 @@ export class DiscordClient extends EventEmitter {
 
             try {
                 // Use your existing function to handle text and get a response
-                const responseStream = await this.respondToText({ userId, userName, channelId, input: textContent, requestedResponseType: ResponseType.RESPONSE_TEXT, message, interestChannels, discordMessage: message, discordClient: this.client });
+                const responseStream = await this.respondToText({ userId, userName, channelId, input: textContent, requestedResponseType: ResponseType.RESPONSE_TEXT, message, interestChannels, discordMessage: message, discordClient: this.client, channelName, channelTopic });
                 if (!responseStream) {
                     console.log("No response stream");
                     return;
@@ -475,7 +478,9 @@ export class DiscordClient extends EventEmitter {
         state,
         interestChannels,
         discordClient,
-        discordMessage
+        discordMessage,
+        channelName,
+        channelTopic
     }: {
         message: Message,
         hasInterest?: boolean,
@@ -485,10 +490,12 @@ export class DiscordClient extends EventEmitter {
         state?: State,
         interestChannels?: InterestChannels
         discordClient: Client,
-        discordMessage: DiscordMessage
+        discordMessage: DiscordMessage,
+        channelName: string,
+        channelTopic?: string
     }): Promise<Content> {
         if(!state) {
-            state = {...(await this.runtime.composeState(message) as State), discordClient, discordMessage }
+            state = {...(await this.runtime.composeState(message) as State), discordClient, discordMessage, channelName, channelTopic }
         }
         // remove the elaborate action 
 
@@ -789,13 +796,20 @@ export class DiscordClient extends EventEmitter {
     */
     async respondToSpokenAudio(userId: UUID, userName: string, channelId: string, inputBuffer: Buffer, requestedResponseType?: ResponseType): Promise<Readable | null> {
         console.log("Responding to spoken audio");
+        const channel = this.client.channels.cache.get(channelId);
+        let channelName = "";
+        let channelTopic = "";
+        if (channel) {
+            channelName = (channel as any).name || "";
+            channelTopic = (channel as any).topic || "";
+        }
         if (requestedResponseType == null) requestedResponseType = ResponseType.RESPONSE_AUDIO;
         const sstService = speechToText;
         const text = await sstService(inputBuffer);
         if (requestedResponseType == ResponseType.SPOKEN_TEXT) {
             return Readable.from(text as string);
         } else {
-            return await this.respondToText({ userId, userName, channelId, input: text as string, requestedResponseType, discordClient: this.client });
+            return await this.respondToText({ userId, userName, channelId, input: text as string, requestedResponseType, discordClient: this.client, channelName, channelTopic });
         }
     }
 
@@ -803,7 +817,7 @@ export class DiscordClient extends EventEmitter {
     /**
      * Responds to text
      */
-    async respondToText({ userId, userName, channelId, input, requestedResponseType, message, discordMessage, discordClient, interestChannels }: {
+    async respondToText({ userId, userName, channelId, input, requestedResponseType, message, discordMessage, discordClient, interestChannels, channelName, channelTopic }: {
         userId: UUID,
         userName: string,
         channelId: string,
@@ -812,7 +826,9 @@ export class DiscordClient extends EventEmitter {
         message?: DiscordMessage,
         discordClient: Client,
         discordMessage?: DiscordMessage,
-        interestChannels?: InterestChannels
+        interestChannels?: InterestChannels,
+        channelTopic? : string,
+        channelName : string
     }): Promise<Readable | null> {
 
         async function _shouldIgnore(message: DiscordMessage, interestChannels: InterestChannels) {
@@ -952,7 +968,9 @@ export class DiscordClient extends EventEmitter {
             callback,
             interestChannels,
             discordClient: this.client,
-            discordMessage: discordMessage as DiscordMessage
+            discordMessage: discordMessage as DiscordMessage,
+            channelName,
+            channelTopic
         });
 
         if (!response.content) {
